@@ -5,6 +5,7 @@ A short Python program to analyze git logs.
 1. We use a single-process CLI architecture.
 2. Caching when there is no `--url` flag.
 3. No tuned RAG.
+4. LLM is fixed using gpt-5-nano.
 
 ## Modules
 ### `commit_critic.py`
@@ -25,7 +26,7 @@ All git-related logics, including:
 ### `llm.py`
 All LLM-related logics, including:
 - Load API key from `.env`
-- Send prompts to a fixed model
+- Send prompts to a fixed model using the OpenAI SDK
 - Return parsed results for commit scoring or suggested messages
 
 ## Getting Started

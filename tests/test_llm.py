@@ -1,5 +1,3 @@
-import io
-import json
 import llm
 import pytest
 
@@ -43,11 +41,6 @@ def test_load_api_key_raises_when_key_is_missing(monkeypatch, tmp_path):
 
     with pytest.raises(RuntimeError, match="Missing API_KEY"):
         llm.load_api_key(env_path=env_file)
-
-
-def test_get_model_name_returns_fixed_model():
-    """The scaffold should expose a single fixed model name."""
-    assert llm.get_model_name() == llm.MODEL_NAME
 
 
 def test_build_analysis_prompt_includes_commit_messages():
@@ -105,64 +98,69 @@ def test_build_request_payload_uses_fixed_model_and_messages():
 
 
 def test_request_llm_completion_calls_openai_api(monkeypatch):
-    """Provider requests should be translated into the OpenAI chat format."""
+    """Provider requests should be translated into the OpenAI SDK call."""
     payload = llm.build_request_payload("prompt text")
     captured = {}
 
-    class FakeResponse:
-        def __enter__(self):
-            return self
-
-        def __exit__(self, exc_type, exc, tb):
-            return False
-
-        def read(self):
-            return json.dumps(
+    class FakeCompletions:
+        def create(self, model, messages):
+            captured["model"] = model
+            captured["messages"] = messages
+            return type(
+                "Response",
+                (),
                 {
                     "choices": [
-                        {
-                            "message": {
-                                "content": '{"title": "feat: add cache"}',
-                            }
-                        }
+                        type(
+                            "Choice",
+                            (),
+                            {
+                                "message": type(
+                                    "Message",
+                                    (),
+                                    {"content": '{"title": "feat: add cache"}'},
+                                )()
+                            },
+                        )()
                     ]
-                }
-            ).encode("utf-8")
+                },
+            )()
 
-    def fake_urlopen(raw_request):
-        captured["url"] = raw_request.full_url
-        captured["headers"] = dict(raw_request.headers)
-        captured["body"] = json.loads(raw_request.data.decode("utf-8"))
-        return FakeResponse()
+    class FakeClient:
+        def __init__(self, api_key):
+            captured["api_key"] = api_key
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
 
-    monkeypatch.setattr(llm.request, "urlopen", fake_urlopen)
+    monkeypatch.setattr(llm, "OpenAI", FakeClient)
 
     result = llm.request_llm_completion(payload, "secret-key")
 
     assert result == '{"title": "feat: add cache"}'
-    assert captured["url"] == llm.OPENAI_API_URL
-    assert captured["headers"]["Content-type"] == "application/json"
-    assert captured["headers"]["Authorization"] == "Bearer secret-key"
-    assert captured["body"]["model"] == llm.MODEL_NAME
-    assert captured["body"]["messages"][0]["content"] == llm.SYSTEM_PROMPT
-    assert captured["body"]["messages"][1]["content"] == "prompt text"
-    assert set(captured["body"]) == {"model", "messages"}
+    assert captured["api_key"] == "secret-key"
+    assert captured["model"] == llm.MODEL_NAME
+    assert captured["messages"][0]["content"] == llm.SYSTEM_PROMPT
+    assert captured["messages"][1]["content"] == "prompt text"
 
 
 def test_request_llm_completion_raises_runtime_error_for_http_failures(monkeypatch):
     """HTTP failures should be converted into readable runtime errors."""
     payload = llm.build_request_payload("prompt text")
 
-    def fake_urlopen(_raw_request):
-        raise llm.error.HTTPError(
-            url="https://example.com",
-            code=400,
-            msg="Bad Request",
-            hdrs=None,
-            fp=io.BytesIO(b'{"error":"bad request"}'),
-        )
+    class FakeAPIStatusError(Exception):
+        def __init__(self, response_text):
+            super().__init__(response_text)
+            self.response = type("Response", (), {"text": response_text})()
 
-    monkeypatch.setattr(llm.request, "urlopen", fake_urlopen)
+    class FakeCompletions:
+        def create(self, model, messages):
+            raise FakeAPIStatusError('{"error":"bad request"}')
+
+    class FakeClient:
+        def __init__(self, api_key):
+            self.chat = type("Chat", (), {"completions": FakeCompletions()})()
+
+    monkeypatch.setattr(llm, "APIStatusError", FakeAPIStatusError)
+    monkeypatch.setattr(llm, "OpenAI", FakeClient)
 
     with pytest.raises(RuntimeError, match="OpenAI request failed"):
         llm.request_llm_completion(payload, "secret-key")

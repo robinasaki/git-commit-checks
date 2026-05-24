@@ -3,10 +3,11 @@
 import json
 import os
 from pathlib import Path
-from urllib import error, request
 
+from openai import APIConnectionError, APIStatusError, OpenAI
+
+# Fixed for the current scope.
 MODEL_NAME = "gpt-5-nano"
-OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 SYSTEM_PROMPT = (
     "You are an AI assistant that critiques Git commit messages and suggests clear, "
     "specific, and well-structured alternatives. Always respond with valid JSON only."
@@ -33,11 +34,6 @@ def load_api_key(env_path=".env", key_name="API_KEY"):
             return current_value.strip().strip('"').strip("'")
 
     raise RuntimeError(f"Missing {key_name} in {env_file}")
-
-
-def get_model_name():
-    """Return the fixed model name used by this project."""
-    return MODEL_NAME
 
 
 def build_analysis_prompt(commits):
@@ -102,36 +98,24 @@ def build_request_payload(user_prompt, system_prompt=SYSTEM_PROMPT, model=MODEL_
 
 def request_llm_completion(payload, api_key):
     """Send the request payload to OpenAI and return the generated text response."""
-    openai_payload = {
-        "model": payload["model"],
-        "messages": payload["messages"],
-    }
-    raw_request = request.Request(
-        url=OPENAI_API_URL,
-        data=json.dumps(openai_payload).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
-        },
-        method="POST",
-    )
+    client = OpenAI(api_key=api_key)
 
     try:
-        with request.urlopen(raw_request) as response:
-            response_body = response.read().decode("utf-8")
-    except error.HTTPError as exc:
-        error_body = exc.read().decode("utf-8", errors="replace")
+        response = client.chat.completions.create(
+            model=payload["model"],
+            messages=payload["messages"],
+        )
+    except APIStatusError as exc:
+        error_body = exc.response.text if exc.response is not None else str(exc)
         raise RuntimeError(f"OpenAI request failed: {error_body}") from exc
-    except error.URLError as exc:
-        raise RuntimeError(f"OpenAI request failed: {exc.reason}") from exc
+    except APIConnectionError as exc:
+        raise RuntimeError(f"OpenAI request failed: {exc}") from exc
 
-    parsed_response = json.loads(response_body)
-    choices = parsed_response.get("choices", [])
-    if not choices:
+    if not response.choices:
         raise RuntimeError("OpenAI response did not include any choices.")
 
-    message = choices[0].get("message", {})
-    content = message.get("content", "")
+    message = response.choices[0].message
+    content = message.content or ""
     if not content:
         raise RuntimeError("OpenAI response did not include any message content.")
 
