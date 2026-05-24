@@ -164,23 +164,26 @@ def parse_json_response(response_text):
         raise ValueError("LLM response was not valid JSON.") from error
 
 
-def analyze_commits(commits, api_key=None):
-    """Prepare and send a commit-history analysis request."""
+def request_json(prompt, api_key=None):
+    """Send a prompt to the fixed model and parse the JSON response."""
     resolved_api_key = api_key or load_api_key()
-    prompt = build_analysis_prompt(commits)
     payload = build_request_payload(prompt)
     response_text = request_llm_completion(payload, resolved_api_key)
     return parse_json_response(response_text)
+
+
+def analyze_commits(commits, api_key=None):
+    """Prepare and send a commit-history analysis request."""
+    return request_json(build_analysis_prompt(commits), api_key=api_key)
 
 
 def suggest_commit_message(diff_text, changed_files=None, diff_stats=None, api_key=None):
     """Prepare and send a staged-diff request for a commit message suggestion."""
-    resolved_api_key = api_key or load_api_key()
-    prompt = build_write_prompt(
-        diff_text=diff_text,
-        changed_files=changed_files,
-        diff_stats=diff_stats,
+    return request_json(
+        build_write_prompt(
+            diff_text=diff_text,
+            changed_files=changed_files,
+            diff_stats=diff_stats,
+        ),
+        api_key=api_key,
     )
-    payload = build_request_payload(prompt)
-    response_text = request_llm_completion(payload, resolved_api_key)
-    return parse_json_response(response_text)

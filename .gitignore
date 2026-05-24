@@ -4,3 +4,4 @@ __pycache__
 .git-template
 .git-template-tests
 .git-commit-checks-temp
+.commit_critic_cache.json

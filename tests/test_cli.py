@@ -1,3 +1,5 @@
+import json
+
 import commit_critic
 import pytest
 
@@ -69,6 +71,78 @@ def test_run_analyze_reads_commits_and_prints_results(monkeypatch, capsys):
     assert 'Commit: "fixed bug"' in output
     assert "Average score: 4.2/10" in output
     assert cleaned == [("/tmp/repo", ".")]
+
+
+def test_run_analyze_uses_local_cache_when_url_is_missing(monkeypatch, tmp_path, capsys):
+    """Local analysis should reuse cached results when the commit hash set matches."""
+    commits = [{"hash": "abc123", "subject": "fix: auth bug", "body": ""}]
+    cached_result = {
+        "weak_commits": [],
+        "strong_commits": [],
+        "stats": {
+            "average_score": 7,
+            "vague_commits": 1,
+            "vague_percentage": 2,
+            "one_word_commits": 0,
+            "one_word_percentage": 0,
+        },
+    }
+    cache_payload = {
+        "cache_key": "abc123",
+        "result": cached_result,
+    }
+    (tmp_path / commit_critic.CACHE_FILE_NAME).write_text(
+        json.dumps(cache_payload),
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(commit_critic.git_ops, "prepare_repository", lambda url=None: tmp_path)
+    monkeypatch.setattr(commit_critic.git_ops, "get_recent_commits", lambda repo_path=".", limit=50: commits)
+    monkeypatch.setattr(
+        commit_critic.llm,
+        "analyze_commits",
+        lambda commits: pytest.fail("LLM should not be called when cache is valid."),
+    )
+    monkeypatch.setattr(commit_critic.git_ops, "cleanup_repository", lambda repo_path, original_repo=".": None)
+
+    result = commit_critic.run_analyze()
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "Using cached analysis." in output
+    assert "Average score: 7/10" in output
+
+
+def test_run_analyze_saves_local_cache_when_url_is_missing(monkeypatch, tmp_path, capsys):
+    """Local analysis should write cache data after a fresh LLM response."""
+    commits = [{"hash": "abc123", "subject": "fix: auth bug", "body": ""}]
+    analysis_result = {
+        "weak_commits": [],
+        "strong_commits": [],
+        "stats": {
+            "average_score": 8,
+            "vague_commits": 0,
+            "vague_percentage": 0,
+            "one_word_commits": 0,
+            "one_word_percentage": 0,
+        },
+    }
+
+    monkeypatch.setattr(commit_critic.git_ops, "prepare_repository", lambda url=None: tmp_path)
+    monkeypatch.setattr(commit_critic.git_ops, "get_recent_commits", lambda repo_path=".", limit=50: commits)
+    monkeypatch.setattr(commit_critic.llm, "analyze_commits", lambda commits: analysis_result)
+    monkeypatch.setattr(commit_critic.git_ops, "cleanup_repository", lambda repo_path, original_repo=".": None)
+
+    result = commit_critic.run_analyze()
+    capsys.readouterr()
+
+    cache_payload = json.loads((tmp_path / commit_critic.CACHE_FILE_NAME).read_text(encoding="utf-8"))
+
+    assert result == 0
+    assert cache_payload == {
+        "cache_key": "abc123",
+        "result": analysis_result,
+    }
 
 
 def test_run_write_prints_suggestion_and_accepts_default(monkeypatch, capsys):

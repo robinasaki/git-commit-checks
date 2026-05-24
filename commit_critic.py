@@ -1,17 +1,20 @@
 """Command-line entrypoint for commit analysis and commit-message suggestions."""
 
 import argparse
+import json
+from pathlib import Path
 
 import git_ops
 import llm
 
 ANALYZE_LIMIT = 50
+CACHE_FILE_NAME = ".commit_critic_cache.json"
 SECTION_DIVIDER = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 
 def parse_args(argv=None):
     """Parse command-line arguments for analysis or write mode."""
-    parser = argparse.ArgumentParser(description="Analyze commit quality with Gemini.")
+    parser = argparse.ArgumentParser(description="Analyze commit quality with AI.")
     mode_group = parser.add_mutually_exclusive_group(required=True)
     mode_group.add_argument(
         "--analyze",
@@ -43,6 +46,78 @@ def format_commit_message(title, bullets=None):
     return f"{title}\n\n{bullet_lines}"
 
 
+def get_cache_path(repo_path):
+    """Return the cache file path for a local repository analysis."""
+    return Path(repo_path) / CACHE_FILE_NAME
+
+
+def build_cache_key(commits):
+    """Build a stable cache key from the analyzed commit hashes."""
+    return "|".join(commit.get("hash", "") for commit in commits)
+
+
+def load_cached_analysis(repo_path, cache_key):
+    """Return cached analysis results when the current commit set matches the cache."""
+    cache_path = get_cache_path(repo_path)
+    if not cache_path.exists():
+        return None
+
+    try:
+        cache_payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return None
+
+    if cache_payload.get("cache_key") != cache_key:
+        return None
+
+    return cache_payload.get("result")
+
+
+def save_cached_analysis(repo_path, cache_key, result):
+    """Write analysis results to the local cache file."""
+    cache_path = get_cache_path(repo_path)
+    cache_payload = {
+        "cache_key": cache_key,
+        "result": result,
+    }
+    cache_path.write_text(json.dumps(cache_payload, indent=2), encoding="utf-8")
+
+
+def get_analysis_result(commits, repo_path, use_cache):
+    """Return analyzed commit results, optionally using a local cache."""
+    if not use_cache:
+        return llm.analyze_commits(commits)
+
+    cache_key = build_cache_key(commits)
+    cached_result = load_cached_analysis(repo_path, cache_key)
+    if cached_result is not None:
+        print("Using cached analysis.\n")
+        return cached_result
+
+    result = llm.analyze_commits(commits)
+    save_cached_analysis(repo_path, cache_key, result)
+    return result
+
+
+def print_commit_section(title, entries, empty_message, detail_keys):
+    """Print a commit section using a consistent entry format."""
+    print(SECTION_DIVIDER)
+    print(title)
+    print(SECTION_DIVIDER)
+    print()
+
+    if not entries:
+        print(f"{empty_message}\n")
+        return
+
+    for entry in entries:
+        print(f'Commit: "{entry.get("commit", "Unknown commit")}"')
+        print(f'Score: {entry.get("score", "?")}/10')
+        for label, key in detail_keys:
+            print(f"{label}: {entry.get(key, f'No {key} provided')}")
+        print()
+
+
 def print_analysis_results(result):
     """Print commit-analysis output in a terminal-friendly format."""
     weak_commits = result.get("weak_commits", [])
@@ -50,34 +125,18 @@ def print_analysis_results(result):
     stats = result.get("stats", {})
 
     print("\nAnalyzing last 50 commits...\n")
-    print(SECTION_DIVIDER)
-    print("💩 COMMITS THAT NEED WORK")
-    print(SECTION_DIVIDER)
-    print()
-
-    if weak_commits:
-        for entry in weak_commits:
-            print(f'Commit: "{entry.get("commit", "Unknown commit")}"')
-            print(f'Score: {entry.get("score", "?")}/10')
-            print(f'Issue: {entry.get("issue", "No issue provided")}')
-            print(f'Better: {entry.get("better", "No suggestion provided")}')
-            print()
-    else:
-        print("No weak commits found.\n")
-
-    print(SECTION_DIVIDER)
-    print("💎 WELL-WRITTEN COMMITS")
-    print(SECTION_DIVIDER)
-    print()
-
-    if strong_commits:
-        for entry in strong_commits:
-            print(f'Commit: "{entry.get("commit", "Unknown commit")}"')
-            print(f'Score: {entry.get("score", "?")}/10')
-            print(f'Why it\'s good: {entry.get("why_its_good", "No explanation provided")}')
-            print()
-    else:
-        print("No strong commits found.\n")
+    print_commit_section(
+        "💩 COMMITS THAT NEED WORK",
+        weak_commits,
+        "No weak commits found.",
+        [("Issue", "issue"), ("Better", "better")],
+    )
+    print_commit_section(
+        "💎 WELL-WRITTEN COMMITS",
+        strong_commits,
+        "No strong commits found.",
+        [("Why it's good", "why_its_good")],
+    )
 
     print(SECTION_DIVIDER)
     print("📊 YOUR STATS")
@@ -129,6 +188,7 @@ def print_write_results(result, diff_stats):
 def run_analyze(url=None):
     """Run analysis mode for the current repository or a remote clone."""
     repo_path = git_ops.prepare_repository(url=url)
+    use_cache = not url
 
     try:
         commits = git_ops.get_recent_commits(repo_path=repo_path, limit=ANALYZE_LIMIT)
@@ -136,7 +196,7 @@ def run_analyze(url=None):
             print("No commits found to analyze.")
             return 1
 
-        result = llm.analyze_commits(commits)
+        result = get_analysis_result(commits, repo_path, use_cache=use_cache)
         print_analysis_results(result)
         return 0
     finally:
