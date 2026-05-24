@@ -3,3 +3,4 @@ __pycache__
 .pytest_cache
 .git-template
 .git-template-tests
+.git-commit-checks-temp

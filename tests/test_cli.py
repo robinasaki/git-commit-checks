@@ -72,7 +72,7 @@ def test_run_analyze_reads_commits_and_prints_results(monkeypatch, capsys):
 
 
 def test_run_write_prints_suggestion_and_accepts_default(monkeypatch, capsys):
-    """Write mode should show the suggestion and accept Enter as the default choice."""
+    """Write mode should show the suggestion and commit the default accepted message."""
     monkeypatch.setattr(commit_critic.git_ops, "get_staged_diff", lambda: "diff --git a/auth.py b/auth.py")
     monkeypatch.setattr(commit_critic.git_ops, "get_changed_files", lambda staged=True: ["auth.py"])
     monkeypatch.setattr(
@@ -89,6 +89,12 @@ def test_run_write_prints_suggestion_and_accepts_default(monkeypatch, capsys):
             "bullets": ["Add specific error types", "Update tests"],
         },
     )
+    committed_messages = []
+    monkeypatch.setattr(
+        commit_critic.git_ops,
+        "commit_staged_changes",
+        lambda message: committed_messages.append(message) or "[main abc123] refactor(auth): improve error handling",
+    )
     monkeypatch.setattr("builtins.input", lambda _prompt="": "")
 
     result = commit_critic.run_write()
@@ -100,6 +106,44 @@ def test_run_write_prints_suggestion_and_accepts_default(monkeypatch, capsys):
     assert "refactor(auth): improve error handling" in output
     assert "- Add specific error types" in output
     assert "Final commit message:" in output
+    assert "Commit created successfully." in output
+    assert committed_messages == [
+        "refactor(auth): improve error handling\n\n- Add specific error types\n- Update tests"
+    ]
+
+
+def test_run_write_commits_custom_message(monkeypatch, capsys):
+    """Write mode should commit the custom message when the user overrides the suggestion."""
+    monkeypatch.setattr(commit_critic.git_ops, "get_staged_diff", lambda: "diff --git a/auth.py b/auth.py")
+    monkeypatch.setattr(commit_critic.git_ops, "get_changed_files", lambda staged=True: ["auth.py"])
+    monkeypatch.setattr(
+        commit_critic.git_ops,
+        "get_diff_stats",
+        lambda staged=True: {"files_changed": 1, "insertions": 4, "deletions": 1},
+    )
+    monkeypatch.setattr(
+        commit_critic.llm,
+        "suggest_commit_message",
+        lambda diff_text, changed_files=None, diff_stats=None: {
+            "changes_detected": ["Modified authentication logic"],
+            "title": "refactor(auth): improve error handling",
+            "bullets": ["Add specific error types"],
+        },
+    )
+    committed_messages = []
+    monkeypatch.setattr(
+        commit_critic.git_ops,
+        "commit_staged_changes",
+        lambda message: committed_messages.append(message) or "[main abc123] custom message",
+    )
+    monkeypatch.setattr("builtins.input", lambda _prompt="": "custom commit message")
+
+    result = commit_critic.run_write()
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert "custom commit message" in output
+    assert committed_messages == ["custom commit message"]
 
 
 def test_run_write_returns_error_when_no_staged_changes(monkeypatch, capsys):

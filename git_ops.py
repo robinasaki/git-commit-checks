@@ -110,6 +110,11 @@ def get_diff_stats(repo_path=".", staged=True):
     }
 
 
+def commit_staged_changes(message, repo_path="."):
+    """Create a commit from the current staged changes using the provided message."""
+    return run_git_command(["commit", "-m", message], repo_path=repo_path)
+
+
 def clone_remote_repository(url):
     """Clone a repository URL or local path into a temporary directory."""
     temp_root = Path.cwd() / ".git-commit-checks-temp"

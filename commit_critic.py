@@ -157,7 +157,9 @@ def run_write():
         changed_files=changed_files,
         diff_stats=diff_stats,
     )
-    print_write_results(result, diff_stats)
+    final_message = print_write_results(result, diff_stats)
+    git_ops.commit_staged_changes(final_message)
+    print("\nCommit created successfully.")
     return 0
 
 

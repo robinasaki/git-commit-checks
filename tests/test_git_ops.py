@@ -157,6 +157,26 @@ def test_get_diff_stats_summarizes_numstat_output(monkeypatch):
     assert stats == {"files_changed": 3, "insertions": 5, "deletions": 1}
 
 
+def test_commit_staged_changes_uses_provided_message(monkeypatch):
+    """Committing staged changes should delegate to git commit with the chosen message."""
+    captured = {}
+
+    def fake_run_git_command(args, repo_path="."):
+        captured["args"] = args
+        captured["repo_path"] = repo_path
+        return "[main abc123] feat: add cache"
+
+    monkeypatch.setattr(git_ops, "run_git_command", fake_run_git_command)
+
+    result = git_ops.commit_staged_changes("feat: add cache", repo_path="/repo")
+
+    assert result == "[main abc123] feat: add cache"
+    assert captured == {
+        "args": ["commit", "-m", "feat: add cache"],
+        "repo_path": "/repo",
+    }
+
+
 def test_clone_remote_repository_clones_into_hidden_temp_dir(monkeypatch):
     """Cloning should create a temp path and invoke git clone with depth 50."""
     cwd_path = Path("/workspace")
