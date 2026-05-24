@@ -4,6 +4,7 @@ A short Python program to analyze git logs.
 ## Assumptions
 1. We use a single-process CLI architecture.
 2. Caching when there is no `--url` flag.
+3. No tuned RAG.
 
 ## Modules
 ### `commit_critic.py`
