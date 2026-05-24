@@ -6,23 +6,23 @@ import shutil
 import subprocess
 import tempfile
 
-GIT_TEMPLATE_DIR = Path.cwd() / ".git-template"
-GIT_TEMPLATE_DIR.mkdir(exist_ok=True)
+TEMP_ROOT_NAME = ".git-commit-checks-temp"
 
 
 def run_git_command(args, repo_path="."):
     """Run a git command in a repository and return trimmed stdout."""
     env = dict(os.environ)
-    env.setdefault("GIT_TEMPLATE_DIR", str(GIT_TEMPLATE_DIR))
+    with tempfile.TemporaryDirectory(prefix="git-template-") as template_dir:
+        env.setdefault("GIT_TEMPLATE_DIR", template_dir)
 
-    completed_process = subprocess.run(
-        ["git", *args],
-        cwd=repo_path,
-        capture_output=True,
-        text=True,
-        check=False,
-        env=env,
-    )
+        completed_process = subprocess.run(
+            ["git", *args],
+            cwd=repo_path,
+            capture_output=True,
+            text=True,
+            check=False,
+            env=env,
+        )
 
     if completed_process.returncode != 0:
         error_message = completed_process.stderr.strip() or completed_process.stdout.strip()
@@ -117,7 +117,7 @@ def commit_staged_changes(message, repo_path="."):
 
 def clone_remote_repository(url):
     """Clone a repository URL or local path into a temporary directory."""
-    temp_root = Path.cwd() / ".git-commit-checks-temp"
+    temp_root = Path.cwd() / TEMP_ROOT_NAME
     temp_root.mkdir(exist_ok=True)
     clone_path = Path(tempfile.mkdtemp(prefix="repo-", dir=temp_root))
     run_git_command(["clone", "--depth", "50", url, str(clone_path)])
@@ -142,3 +142,8 @@ def cleanup_repository(repo_path, original_repo="."):
 
     if repo_path.exists():
         shutil.rmtree(repo_path)
+
+    temp_root = repo_path.parent
+    expected_temp_root = original_repo.parent / TEMP_ROOT_NAME
+    if temp_root == expected_temp_root and temp_root.exists() and not any(temp_root.iterdir()):
+        temp_root.rmdir()

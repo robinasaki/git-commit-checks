@@ -22,6 +22,7 @@ def test_run_git_command_returns_trimmed_stdout(monkeypatch):
     assert captured["kwargs"]["cwd"] == "/repo"
     assert captured["kwargs"]["capture_output"] is True
     assert captured["kwargs"]["text"] is True
+    assert "GIT_TEMPLATE_DIR" in captured["kwargs"]["env"]
 
 
 def test_run_git_command_raises_runtime_error_on_failure(monkeypatch):
@@ -199,11 +200,12 @@ def test_clone_remote_repository_clones_into_hidden_temp_dir(monkeypatch):
 
     cloned_repo = git_ops.clone_remote_repository("https://example.com/repo.git")
 
-    assert cloned_repo == Path("/workspace/.git-commit-checks-temp/repo-123")
-    assert created_dirs == [(Path("/workspace/.git-commit-checks-temp"), True)]
+    expected_temp_root = Path("/workspace") / git_ops.TEMP_ROOT_NAME
+    assert cloned_repo == expected_temp_root / "repo-123"
+    assert created_dirs == [(expected_temp_root, True)]
     assert clone_calls == [
         (
-            ["clone", "--depth", "50", "https://example.com/repo.git", "/workspace/.git-commit-checks-temp/repo-123"],
+            ["clone", "--depth", "50", "https://example.com/repo.git", str(expected_temp_root / "repo-123")],
             ".",
         )
     ]
@@ -230,21 +232,29 @@ def test_prepare_repository_clones_when_url_is_provided(monkeypatch):
 def test_cleanup_repository_removes_temporary_clone(monkeypatch):
     """Cleanup should delete cloned repositories without touching the original repo."""
     removed_paths = []
+    removed_dirs = []
 
     monkeypatch.setattr(git_ops.shutil, "rmtree", lambda path: removed_paths.append(path))
     monkeypatch.setattr(git_ops.Path, "exists", lambda self: True)
+    monkeypatch.setattr(git_ops.Path, "iterdir", lambda self: iter(()))
+    monkeypatch.setattr(git_ops.Path, "rmdir", lambda self: removed_dirs.append(self))
 
-    git_ops.cleanup_repository("/tmp/cloned-repo", original_repo="/workspace/source-repo")
+    temp_root = Path("/workspace") / git_ops.TEMP_ROOT_NAME
+    git_ops.cleanup_repository(temp_root / "repo-123", original_repo="/workspace/source-repo")
 
-    assert removed_paths == [Path("/tmp/cloned-repo").resolve()]
+    assert removed_paths == [(temp_root / "repo-123").resolve()]
+    assert removed_dirs == [temp_root.resolve()]
 
 
 def test_cleanup_repository_skips_original_repo(monkeypatch):
     """Cleanup should not remove the original repository path."""
     removed_paths = []
+    removed_dirs = []
 
     monkeypatch.setattr(git_ops.shutil, "rmtree", lambda path: removed_paths.append(path))
+    monkeypatch.setattr(git_ops.Path, "rmdir", lambda self: removed_dirs.append(self))
 
     git_ops.cleanup_repository("/workspace/repo", original_repo="/workspace/repo")
 
     assert removed_paths == []
+    assert removed_dirs == []
