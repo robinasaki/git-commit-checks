@@ -71,6 +71,41 @@ def test_get_recent_commits_returns_commit_metadata(monkeypatch):
     ]
 
 
+def test_get_recent_commits_handles_entries_without_body_separator(monkeypatch):
+    """Recent commit parsing should tolerate entries that only contain hash and subject."""
+    log_output = (
+        "a" * 40
+        + "\x1f"
+        + "fix: add second file"
+        + "\x1e"
+        + "b" * 40
+        + "\x1f"
+        + "feat: add first file"
+        + "\x1f"
+        + "More context here"
+        + "\x1e"
+    )
+
+    monkeypatch.setattr(git_ops, "run_git_command", lambda args, repo_path=".": log_output)
+
+    commits = git_ops.get_recent_commits(repo_path="/repo", limit=2)
+
+    assert commits == [
+        {
+            "hash": "a" * 40,
+            "subject": "fix: add second file",
+            "body": "",
+            "message": "fix: add second file",
+        },
+        {
+            "hash": "b" * 40,
+            "subject": "feat: add first file",
+            "body": "More context here",
+            "message": "feat: add first file\n\nMore context here",
+        },
+    ]
+
+
 def test_get_staged_diff_requests_staged_patch(monkeypatch):
     """Staged diff helper should delegate to git diff --staged."""
     captured = {}

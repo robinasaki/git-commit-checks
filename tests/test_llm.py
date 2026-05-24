@@ -1,3 +1,5 @@
+import io
+import json
 import llm
 import pytest
 
@@ -72,7 +74,7 @@ def test_build_write_prompt_includes_files_stats_and_diff():
         diff_stats={"files_changed": 2, "insertions": 8, "deletions": 3},
     )
 
-    assert "summary" in prompt
+    assert "changes_detected" in prompt
     assert "title" in prompt
     assert "- app.py" in prompt
     assert "- tests/test_app.py" in prompt
@@ -92,20 +94,78 @@ def test_build_messages_creates_system_and_user_entries():
     ]
 
 
-def test_build_request_payload_uses_fixed_model_and_default_temperature():
-    """Request payloads should use the configured model and message builder."""
+def test_build_request_payload_uses_fixed_model_and_messages():
+    """Request payloads should only include the fixed model and chat messages."""
     payload = llm.build_request_payload("prompt text")
 
     assert payload["model"] == llm.MODEL_NAME
-    assert payload["temperature"] == 0.2
     assert payload["messages"][0]["role"] == "system"
     assert payload["messages"][1] == {"role": "user", "content": "prompt text"}
+    assert set(payload) == {"model", "messages"}
 
 
-def test_request_llm_completion_raises_not_implemented():
-    """The provider call should remain an explicit scaffold for now."""
-    with pytest.raises(NotImplementedError, match="Provider call not implemented yet."):
-        llm.request_llm_completion({}, "secret")
+def test_request_llm_completion_calls_openai_api(monkeypatch):
+    """Provider requests should be translated into the OpenAI chat format."""
+    payload = llm.build_request_payload("prompt text")
+    captured = {}
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+        def read(self):
+            return json.dumps(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": '{"title": "feat: add cache"}',
+                            }
+                        }
+                    ]
+                }
+            ).encode("utf-8")
+
+    def fake_urlopen(raw_request):
+        captured["url"] = raw_request.full_url
+        captured["headers"] = dict(raw_request.headers)
+        captured["body"] = json.loads(raw_request.data.decode("utf-8"))
+        return FakeResponse()
+
+    monkeypatch.setattr(llm.request, "urlopen", fake_urlopen)
+
+    result = llm.request_llm_completion(payload, "secret-key")
+
+    assert result == '{"title": "feat: add cache"}'
+    assert captured["url"] == llm.OPENAI_API_URL
+    assert captured["headers"]["Content-type"] == "application/json"
+    assert captured["headers"]["Authorization"] == "Bearer secret-key"
+    assert captured["body"]["model"] == llm.MODEL_NAME
+    assert captured["body"]["messages"][0]["content"] == llm.SYSTEM_PROMPT
+    assert captured["body"]["messages"][1]["content"] == "prompt text"
+    assert set(captured["body"]) == {"model", "messages"}
+
+
+def test_request_llm_completion_raises_runtime_error_for_http_failures(monkeypatch):
+    """HTTP failures should be converted into readable runtime errors."""
+    payload = llm.build_request_payload("prompt text")
+
+    def fake_urlopen(_raw_request):
+        raise llm.error.HTTPError(
+            url="https://example.com",
+            code=400,
+            msg="Bad Request",
+            hdrs=None,
+            fp=io.BytesIO(b'{"error":"bad request"}'),
+        )
+
+    monkeypatch.setattr(llm.request, "urlopen", fake_urlopen)
+
+    with pytest.raises(RuntimeError, match="OpenAI request failed"):
+        llm.request_llm_completion(payload, "secret-key")
 
 
 def test_parse_json_response_returns_python_data():
@@ -113,6 +173,13 @@ def test_parse_json_response_returns_python_data():
     response = llm.parse_json_response('{"score": 8, "title": "feat: add cache"}')
 
     assert response == {"score": 8, "title": "feat: add cache"}
+
+
+def test_parse_json_response_handles_code_fences():
+    """JSON wrapped in code fences should still parse successfully."""
+    response = llm.parse_json_response('```json\n{"score": 8}\n```')
+
+    assert response == {"score": 8}
 
 
 def test_parse_json_response_raises_for_invalid_json():
@@ -151,7 +218,11 @@ def test_suggest_commit_message_builds_payload_and_parses_response(monkeypatch):
     def fake_request(payload, api_key):
         captured["payload"] = payload
         captured["api_key"] = api_key
-        return '{"title": "refactor(auth): improve error handling", "bullets": ["Add auth validation"]}'
+        return (
+            '{"changes_detected": ["Updated authentication flow"], '
+            '"title": "refactor(auth): improve error handling", '
+            '"bullets": ["Add auth validation"]}'
+        )
 
     monkeypatch.setattr(llm, "request_llm_completion", fake_request)
 
@@ -162,6 +233,7 @@ def test_suggest_commit_message_builds_payload_and_parses_response(monkeypatch):
     )
 
     assert result == {
+        "changes_detected": ["Updated authentication flow"],
         "title": "refactor(auth): improve error handling",
         "bullets": ["Add auth validation"],
     }

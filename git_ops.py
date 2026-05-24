@@ -45,7 +45,13 @@ def get_recent_commits(repo_path=".", limit=50):
     for entry in log_output.split("\x1e"):
         if not entry.strip():
             continue
-        commit_hash, subject, body = entry.split("\x1f")
+        parts = entry.split("\x1f", maxsplit=2)
+        if len(parts) < 2:
+            continue
+
+        commit_hash = parts[0]
+        subject = parts[1]
+        body = parts[2] if len(parts) > 2 else ""
         clean_body = body.strip()
         message = subject if not clean_body else f"{subject}\n\n{clean_body}"
         commits.append(

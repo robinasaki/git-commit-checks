@@ -1,11 +1,15 @@
+"""LLM helpers for commit analysis and commit-message suggestions."""
+
 import json
 import os
 from pathlib import Path
+from urllib import error, request
 
-MODEL_NAME = "fixed-model"
+MODEL_NAME = "gpt-5-nano"
+OPENAI_API_URL = "https://api.openai.com/v1/chat/completions"
 SYSTEM_PROMPT = (
     "You are an AI assistant that critiques Git commit messages and suggests clear, "
-    "specific, and well-structured alternatives."
+    "specific, and well-structured alternatives. Always respond with valid JSON only."
 )
 
 
@@ -48,7 +52,11 @@ def build_analysis_prompt(commits):
     joined_commits = "\n\n".join(commit_lines) if commit_lines else "No commits provided."
     return (
         "Analyze these commit messages and return JSON with the keys "
-        "`weak_commits`, `strong_commits`, and `stats`.\n\n"
+        "`weak_commits`, `strong_commits`, and `stats`. "
+        "Each weak commit should include `commit`, `score`, `issue`, and `better`. "
+        "Each strong commit should include `commit`, `score`, and `why_its_good`. "
+        "The `stats` object should include `average_score`, `vague_commits`, "
+        "`vague_percentage`, `one_word_commits`, and `one_word_percentage`.\n\n"
         f"{joined_commits}"
     )
 
@@ -67,7 +75,9 @@ def build_write_prompt(diff_text, changed_files=None, diff_stats=None):
 
     return (
         "Review the staged changes and suggest a clear commit message. "
-        "Return JSON with the keys `summary`, `title`, and `bullets`.\n\n"
+        "Return JSON with the keys `changes_detected`, `title`, and `bullets`. "
+        "`changes_detected` should be a short list of high-level changes. "
+        "`title` should be a concise commit title. `bullets` should be optional supporting bullets.\n\n"
         f"Changed files:\n{files_section}\n\n"
         f"Diff stats:\n{stats_section}\n\n"
         f"Staged diff:\n{diff_text}"
@@ -87,19 +97,69 @@ def build_request_payload(user_prompt, system_prompt=SYSTEM_PROMPT, model=MODEL_
     return {
         "model": model,
         "messages": build_messages(user_prompt=user_prompt, system_prompt=system_prompt),
-        "temperature": 0.2,
     }
 
 
 def request_llm_completion(payload, api_key):
-    """Send the request payload to the configured LLM provider."""
-    raise NotImplementedError("Provider call not implemented yet.")
+    """Send the request payload to OpenAI and return the generated text response."""
+    openai_payload = {
+        "model": payload["model"],
+        "messages": payload["messages"],
+    }
+    raw_request = request.Request(
+        url=OPENAI_API_URL,
+        data=json.dumps(openai_payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        },
+        method="POST",
+    )
+
+    try:
+        with request.urlopen(raw_request) as response:
+            response_body = response.read().decode("utf-8")
+    except error.HTTPError as exc:
+        error_body = exc.read().decode("utf-8", errors="replace")
+        raise RuntimeError(f"OpenAI request failed: {error_body}") from exc
+    except error.URLError as exc:
+        raise RuntimeError(f"OpenAI request failed: {exc.reason}") from exc
+
+    parsed_response = json.loads(response_body)
+    choices = parsed_response.get("choices", [])
+    if not choices:
+        raise RuntimeError("OpenAI response did not include any choices.")
+
+    message = choices[0].get("message", {})
+    content = message.get("content", "")
+    if not content:
+        raise RuntimeError("OpenAI response did not include any message content.")
+
+    return content.strip()
 
 
 def parse_json_response(response_text):
     """Parse a JSON string returned by the LLM."""
+    cleaned_text = response_text.strip()
+    if cleaned_text.startswith("```"):
+        cleaned_text = cleaned_text.strip("`")
+        if cleaned_text.startswith("json"):
+            cleaned_text = cleaned_text[4:].strip()
+
+    if cleaned_text and cleaned_text[0] not in "[{":
+        object_start = cleaned_text.find("{")
+        array_start = cleaned_text.find("[")
+        valid_starts = [index for index in (object_start, array_start) if index != -1]
+        if valid_starts:
+            cleaned_text = cleaned_text[min(valid_starts):]
+
+    if cleaned_text.startswith("{") and "}" in cleaned_text:
+        cleaned_text = cleaned_text[: cleaned_text.rfind("}") + 1]
+    elif cleaned_text.startswith("[") and "]" in cleaned_text:
+        cleaned_text = cleaned_text[: cleaned_text.rfind("]") + 1]
+
     try:
-        return json.loads(response_text)
+        return json.loads(cleaned_text)
     except json.JSONDecodeError as error:
         raise ValueError("LLM response was not valid JSON.") from error
 

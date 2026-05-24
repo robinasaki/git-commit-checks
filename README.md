@@ -4,7 +4,7 @@ A short Python program to analyze git logs.
 ## Assumptions
 1. We use a single-process CLI architecture.
 ## Modules
-### `cli.py`
+### `commit_critic.py`
 The main entrypoint. Parses arguments and coordinates flow.
 
 Arguments:
@@ -25,7 +25,7 @@ All LLM-related logics, including:
 - Return parsed results for commit scoring or suggested messages
 
 ## Getting Started
-1. Create a new `.env`. Define the `API_KEY` magic word:
+1. Create a new `.env`. Define the `API_KEY`. Use OpenAI key only:
 ```txt
 API_KEY="example_123123_hello_world"
 ```
