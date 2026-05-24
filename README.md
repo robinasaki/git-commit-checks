@@ -30,3 +30,13 @@ All LLM-related logics, including:
 API_KEY="example_123123_hello_world"
 ```
 
+2. Install the corresponding dependencies:
+```bash
+pip install -r requirements.txt
+```
+
+## Testing
+To run all the tests at once, use `scripts/run_tests.sh`.
+```bash
+./scripts/run_tests.sh
+```
