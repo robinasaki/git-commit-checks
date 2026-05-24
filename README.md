@@ -3,7 +3,6 @@ A short Python program to analyze git logs.
 
 ## Assumptions
 1. We use a single-process CLI architecture.
-
 ## Modules
 ### `cli.py`
 The main entrypoint. Parses arguments and coordinates flow.
