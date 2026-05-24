@@ -1,91 +1,195 @@
-import inspect
+from pathlib import Path
+from subprocess import CompletedProcess
 
 import pytest
-
 import git_ops
 
+def test_run_git_command_returns_trimmed_stdout(monkeypatch):
+    """Git commands should return trimmed stdout when they succeed."""
+    captured = {}
 
-@pytest.mark.parametrize(
-    ("func_name", "expected_params"),
-    [
-        ("run_git_command", ["args", "repo_path"]),
-        ("get_recent_commits", ["repo_path", "limit"]),
-        ("get_staged_diff", ["repo_path"]),
-        ("get_changed_files", ["repo_path", "staged"]),
-        ("get_diff_stats", ["repo_path", "staged"]),
-        ("clone_remote_repository", ["url"]),
-        ("prepare_repository", ["url"]),
-        ("cleanup_repository", ["repo_path", "original_repo"]),
-    ],
-)
-def test_git_ops_function_signatures(func_name, expected_params):
-    """Each public git helper should expose the expected arguments."""
-    func = getattr(git_ops, func_name)
-    signature = inspect.signature(func)
+    def fake_run(*args, **kwargs):
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return CompletedProcess(args[0], 0, stdout="main\n", stderr="")
 
-    assert list(signature.parameters) == expected_params
+    monkeypatch.setattr(git_ops.subprocess, "run", fake_run)
+
+    result = git_ops.run_git_command(["branch", "--show-current"], repo_path="/repo")
+
+    assert result == "main"
+    assert captured["args"][0] == ["git", "branch", "--show-current"]
+    assert captured["kwargs"]["cwd"] == "/repo"
+    assert captured["kwargs"]["capture_output"] is True
+    assert captured["kwargs"]["text"] is True
 
 
-@pytest.mark.parametrize(
-    ("func_name", "expected_defaults"),
-    [
-        ("run_git_command", {"repo_path": "."}),
-        ("get_recent_commits", {"repo_path": ".", "limit": 50}),
-        ("get_staged_diff", {"repo_path": "."}),
-        ("get_changed_files", {"repo_path": ".", "staged": True}),
-        ("get_diff_stats", {"repo_path": ".", "staged": True}),
-        ("prepare_repository", {"url": None}),
-        ("cleanup_repository", {"original_repo": "."}),
-    ],
-)
-def test_git_ops_default_values(func_name, expected_defaults):
-    """Default argument values should support the intended CLI flows."""
-    func = getattr(git_ops, func_name)
-    parameters = inspect.signature(func).parameters
+def test_run_git_command_raises_runtime_error_on_failure(monkeypatch):
+    """Git command failures should raise a readable runtime error."""
+    def fake_run(*_args, **_kwargs):
+        return CompletedProcess(["git", "status"], 1, stdout="", stderr="fatal: not a git repository")
 
-    defaults = {
-        name: parameter.default
-        for name, parameter in parameters.items()
-        if parameter.default is not inspect.Parameter.empty
-    }
+    monkeypatch.setattr(git_ops.subprocess, "run", fake_run)
 
-    assert defaults == expected_defaults
+    with pytest.raises(RuntimeError, match="fatal: not a git repository"):
+        git_ops.run_git_command(["status"])
 
 
-@pytest.mark.parametrize(
-    "func_name",
-    [
+def test_get_recent_commits_returns_commit_metadata(monkeypatch):
+    """Recent commit history should be parsed into structured commit dictionaries."""
+    log_output = (
+        "a" * 40
+        + "\x1f"
+        + "fix: add second file"
+        + "\x1f"
+        + "\x1e"
+        + "b" * 40
+        + "\x1f"
+        + "feat: add first file"
+        + "\x1f"
+        + "More context here"
+        + "\x1e"
+    )
+
+    monkeypatch.setattr(git_ops, "run_git_command", lambda args, repo_path=".": log_output)
+
+    commits = git_ops.get_recent_commits(repo_path="/repo", limit=2)
+
+    assert commits == [
+        {
+            "hash": "a" * 40,
+            "subject": "fix: add second file",
+            "body": "",
+            "message": "fix: add second file",
+        },
+        {
+            "hash": "b" * 40,
+            "subject": "feat: add first file",
+            "body": "More context here",
+            "message": "feat: add first file\n\nMore context here",
+        },
+    ]
+
+
+def test_get_staged_diff_requests_staged_patch(monkeypatch):
+    """Staged diff helper should delegate to git diff --staged."""
+    captured = {}
+
+    def fake_run_git_command(args, repo_path="."):
+        captured["args"] = args
+        captured["repo_path"] = repo_path
+        return "diff --git a/file.txt b/file.txt"
+
+    monkeypatch.setattr(git_ops, "run_git_command", fake_run_git_command)
+
+    diff_text = git_ops.get_staged_diff(repo_path="/repo")
+
+    assert diff_text == "diff --git a/file.txt b/file.txt"
+    assert captured == {"args": ["diff", "--staged"], "repo_path": "/repo"}
+
+
+def test_get_changed_files_uses_staged_flag(monkeypatch):
+    """Changed file listing should switch git arguments based on the staged flag."""
+    calls = []
+
+    def fake_run_git_command(args, repo_path="."):
+        calls.append((args, repo_path))
+        return "tracked.txt\nother.py\n"
+
+    monkeypatch.setattr(git_ops, "run_git_command", fake_run_git_command)
+
+    staged_files = git_ops.get_changed_files(repo_path="/repo", staged=True)
+    unstaged_files = git_ops.get_changed_files(repo_path="/repo", staged=False)
+
+    assert staged_files == ["tracked.txt", "other.py"]
+    assert unstaged_files == ["tracked.txt", "other.py"]
+    assert calls == [
+        (["diff", "--name-only", "--staged"], "/repo"),
+        (["diff", "--name-only"], "/repo"),
+    ]
+
+
+def test_get_diff_stats_summarizes_numstat_output(monkeypatch):
+    """Diff stats should count files and numeric insertion and deletion totals."""
+    monkeypatch.setattr(
+        git_ops,
         "run_git_command",
-        "get_recent_commits",
-        "get_staged_diff",
-        "get_changed_files",
-        "get_diff_stats",
-        "clone_remote_repository",
-        "prepare_repository",
-        "cleanup_repository",
-    ],
-)
-def test_git_ops_functions_have_docstrings(func_name):
-    """Public helpers should document their responsibility."""
-    func = getattr(git_ops, func_name)
+        lambda args, repo_path=".": "3\t1\tapp.py\n-\t-\timage.png\n2\t0\ttests.py\n",
+    )
 
-    assert func.__doc__
-    assert func.__doc__.strip()
+    stats = git_ops.get_diff_stats(repo_path="/repo", staged=True)
+
+    assert stats == {"files_changed": 3, "insertions": 5, "deletions": 1}
 
 
-@pytest.mark.parametrize(
-    ("func", "args", "kwargs"),
-    [
-        (git_ops.run_git_command, (["status"],), {}),
-        (git_ops.get_recent_commits, (), {}),
-        (git_ops.get_staged_diff, (), {}),
-        (git_ops.get_changed_files, (), {}),
-        (git_ops.get_diff_stats, (), {}),
-        (git_ops.clone_remote_repository, ("https://example.com/repo.git",), {}),
-        (git_ops.prepare_repository, (), {}),
-        (git_ops.cleanup_repository, ("/tmp/repo",), {}),
-    ],
-)
-def test_stubbed_git_ops_functions_return_none(func, args, kwargs):
-    """Current stub implementations should remain safe no-ops until filled in."""
-    assert func(*args, **kwargs) is None
+def test_clone_remote_repository_clones_into_hidden_temp_dir(monkeypatch):
+    """Cloning should create a temp path and invoke git clone with depth 50."""
+    cwd_path = Path("/workspace")
+    created_dirs = []
+    clone_calls = []
+
+    monkeypatch.setattr(git_ops.Path, "cwd", lambda: cwd_path)
+
+    def fake_mkdir(self, exist_ok=False):
+        created_dirs.append((self, exist_ok))
+
+    monkeypatch.setattr(git_ops.Path, "mkdir", fake_mkdir)
+    monkeypatch.setattr(git_ops.tempfile, "mkdtemp", lambda prefix, dir: "/workspace/.git-commit-checks-temp/repo-123")
+
+    def fake_run_git_command(args, repo_path="."):
+        clone_calls.append((args, repo_path))
+        return ""
+
+    monkeypatch.setattr(git_ops, "run_git_command", fake_run_git_command)
+
+    cloned_repo = git_ops.clone_remote_repository("https://example.com/repo.git")
+
+    assert cloned_repo == Path("/workspace/.git-commit-checks-temp/repo-123")
+    assert created_dirs == [(Path("/workspace/.git-commit-checks-temp"), True)]
+    assert clone_calls == [
+        (
+            ["clone", "--depth", "50", "https://example.com/repo.git", "/workspace/.git-commit-checks-temp/repo-123"],
+            ".",
+        )
+    ]
+
+
+def test_prepare_repository_returns_current_repo_without_url(monkeypatch):
+    """Preparing without a URL should use the current working directory."""
+    monkeypatch.setattr(git_ops.Path, "cwd", lambda: Path("/workspace/repo"))
+
+    prepared_repo = git_ops.prepare_repository()
+
+    assert prepared_repo == "/workspace/repo"
+
+
+def test_prepare_repository_clones_when_url_is_provided(monkeypatch):
+    """Preparing with a URL should delegate to clone_remote_repository."""
+    monkeypatch.setattr(git_ops, "clone_remote_repository", lambda url: Path("/tmp/cloned-repo"))
+
+    prepared_repo = git_ops.prepare_repository(url="https://example.com/repo.git")
+
+    assert prepared_repo == Path("/tmp/cloned-repo")
+
+
+def test_cleanup_repository_removes_temporary_clone(monkeypatch):
+    """Cleanup should delete cloned repositories without touching the original repo."""
+    removed_paths = []
+
+    monkeypatch.setattr(git_ops.shutil, "rmtree", lambda path: removed_paths.append(path))
+    monkeypatch.setattr(git_ops.Path, "exists", lambda self: True)
+
+    git_ops.cleanup_repository("/tmp/cloned-repo", original_repo="/workspace/source-repo")
+
+    assert removed_paths == [Path("/tmp/cloned-repo").resolve()]
+
+
+def test_cleanup_repository_skips_original_repo(monkeypatch):
+    """Cleanup should not remove the original repository path."""
+    removed_paths = []
+
+    monkeypatch.setattr(git_ops.shutil, "rmtree", lambda path: removed_paths.append(path))
+
+    git_ops.cleanup_repository("/workspace/repo", original_repo="/workspace/repo")
+
+    assert removed_paths == []
